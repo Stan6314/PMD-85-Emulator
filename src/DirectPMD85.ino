@@ -17,6 +17,7 @@
  * the Free Software Foundation, either version 3 of the License, or any later version.
  * DirectPMD85 is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY.
  * Stan Pechal, 2023
+ * Version 1.01 - minor code cleaning and addition of comments
 */
 
 #include "fabgl.h"
@@ -36,9 +37,10 @@ static constexpr int scanlinesPerCallback = 2;  // screen height should be divis
 static TaskHandle_t  mainTaskHandle;
 void * auxPoint;
 
-// "Tape recorder"
+// **************************************************************************************************
+// "Tape recorder" is 1 file in SPIFFS
 File file;
-bool isTape = false;
+bool isTape = false;      // Is SPIFFS ready
 int cntTape = 0;
 
 // Sound constants
@@ -54,7 +56,14 @@ fabgl::i8080 m_i8080;
 int portPA = 0;    // Data sent to PA port
 int keyboardIn[16];      // Value read from keyboard PB port
 int shiftFlag = 0x7F;
-bool blinkFlag = false;
+// Variables for VGA video output
+uint8_t brcolor; // bright color
+uint8_t fgcolor; // normal color
+uint8_t bgcolor; // dark color
+uint8_t darkbgcolor; // black
+int width, height;  // Display dimensions
+bool blinkFlag = false;   // Flag for pixel blinking
+int BlinkCnt=0;   // Counter for video pixel blink
 // Variables for emulating 8255 on extended ROM module
 int portExtPB = 0;    // Data sent to PB port
 int portExtPC = 0;    // Data sent to PC port
@@ -65,6 +74,8 @@ volatile unsigned char pmd85ram[65536];   // selected addresses are overwritten 
 #include "monit85.h"
 // ROM memory on extended module is in the array "basicrom[]"
 #include "basic1.h"
+
+// **************************************************************************************************
 // Functions for communication on the bus
 static int readByte(void * context, int address)              { if((address > 0x7FFF) && (address < 0x9000)) return(pmd85rom[address-0x8000]); else return(pmd85ram[address]); };
 static void writeByte(void * context, int address, int value) { pmd85ram[address] = (unsigned char)value; };
@@ -75,7 +86,7 @@ static int readIO(void * context, int address)
   switch (address) {
     // *** 8251 port - for read from "tape" recorder
     case 0x1E:      // Data
-      if(!file.available()) return 0;
+      if(!file.available()) return 0;   // Serial port reads data from file, not from tape recorder
       if((cntTape == 0) &&  file.available()) { cntTape = (file.read() & 0xFF); if(file.available()) cntTape += ((file.read()<<8) & 0xFF00); }
       if((cntTape) &&  file.available()) { cntTape--; return file.read(); } else return 0xFF;
     break;
@@ -110,7 +121,7 @@ static void writeIO(void * context, int address, int value)
       portPA = value;
     break;
     case 0xF6:      // Sound generator
-      if((value & 0x3) == 0) soundGenerator.play(false);
+      if((value & 0x3) == 0) soundGenerator.play(false);    // Stop sound or set frequency
       if((value & 0x3) == 1) { square.setFrequency(FREQ_LO); soundGenerator.play(true); }
       if((value & 0x3) == 2) { square.setFrequency(FREQ_HI); soundGenerator.play(true); }
       if((value & 0x3) == 3) { square.setFrequency(FREQ_ME); soundGenerator.play(true); }
@@ -126,6 +137,7 @@ static void writeIO(void * context, int address, int value)
   }
 };
 
+// **************************************************************************************************
 // Keyboard interface for selected keys
 // Handles Key Up following keys:
 void procesKeyUp(VirtualKey key) {
@@ -429,17 +441,9 @@ void procesKeyDown(VirtualKey key) {
       }
 };
 
-
+// **************************************************************************************************
 void IRAM_ATTR drawScanline(void * arg, uint8_t * dest, int scanLine)
 {
-  auto brcolor = DisplayController.createRawPixel(RGB222(0, 3, 0)); // bright green
-  auto fgcolor = DisplayController.createRawPixel(RGB222(0, 2, 0)); // green
-  auto bgcolor = DisplayController.createRawPixel(RGB222(0, 1, 0)); // dark green
-  auto darkbgcolor = DisplayController.createRawPixel(RGB222(0, 0, 0)); // black
-
-  auto width  = DisplayController.getScreenWidth();
-  auto height = DisplayController.getScreenHeight();
-
   // draws "scanlinesPerCallback" scanlines every time drawScanline() is called
   for (int i = 0; i < scanlinesPerCallback; ++i) {
     // fill border with background color
@@ -448,7 +452,8 @@ void IRAM_ATTR drawScanline(void * arg, uint8_t * dest, int scanLine)
       for (int i = 0; i < 48; ++i)  // 48 bytes must transformed to 288 pixels on row
         {
           unsigned char videobyte = pmd85ram[0xC000 + (scanLine-borderSize)*64 + i];  // Video RAM start address + row start + byte on row
-          if ((videobyte & 0x80) && blinkFlag) {
+          // Set 6 pixel on the screen
+          if ((videobyte & 0x80) && blinkFlag) {    // If blinking
             VGA_PIXELINROW(dest, i*6+borderXSize) = bgcolor;
             VGA_PIXELINROW(dest, i*6+1+borderXSize) = bgcolor;
             VGA_PIXELINROW(dest, i*6+2+borderXSize) = bgcolor;
@@ -456,7 +461,7 @@ void IRAM_ATTR drawScanline(void * arg, uint8_t * dest, int scanLine)
             VGA_PIXELINROW(dest, i*6+4+borderXSize) = bgcolor;
             VGA_PIXELINROW(dest, i*6+5+borderXSize) = bgcolor;
           } else {
-            if (videobyte & 0x40) {
+            if (videobyte & 0x40) {   // If bright
               if(videobyte & 0x01) VGA_PIXELINROW(dest, i*6+borderXSize) = brcolor;
               else VGA_PIXELINROW(dest, i*6+borderXSize) = bgcolor;
               if(videobyte & 0x02) VGA_PIXELINROW(dest, i*6+1+borderXSize) = brcolor;
@@ -469,7 +474,7 @@ void IRAM_ATTR drawScanline(void * arg, uint8_t * dest, int scanLine)
               else VGA_PIXELINROW(dest, i*6+4+borderXSize) = bgcolor;
               if(videobyte & 0x20) VGA_PIXELINROW(dest, i*6+5+borderXSize) = brcolor;
               else VGA_PIXELINROW(dest, i*6+5+borderXSize) = bgcolor;
-            } else {
+            } else {    // If normal color
               if(videobyte & 0x01) VGA_PIXELINROW(dest, i*6+borderXSize) = fgcolor;
               else VGA_PIXELINROW(dest, i*6+borderXSize) = bgcolor;
               if(videobyte & 0x02) VGA_PIXELINROW(dest, i*6+1+borderXSize) = fgcolor;
@@ -490,13 +495,13 @@ void IRAM_ATTR drawScanline(void * arg, uint8_t * dest, int scanLine)
     ++scanLine;
     dest += width;
   }
-
   if (scanLine == height) {
     // signal end of screen
     vTaskNotifyGiveFromISR(mainTaskHandle, NULL);
   }
 }
 
+// **************************************************************************************************
 void setup()
 {
   mainTaskHandle = xTaskGetCurrentTaskHandle();
@@ -508,8 +513,8 @@ void setup()
 
   // SPIFS emulating tape recorder
   if(SPIFFS.begin(true)){
-    // SPIFS is ready, try open file
-    file = SPIFFS.open("/tape.ptp","r");
+    // SPIFFS is ready, try open file
+    file = SPIFFS.open("/tape.ptp","r");    // File represents tape
     if(file) isTape = true;
   }
 
@@ -518,13 +523,20 @@ void setup()
   DisplayController.setScanlinesPerCallBack(scanlinesPerCallback);
   DisplayController.setDrawScanlineCallback(drawScanline);
   DisplayController.setResolution(VGA_400x300_60Hz);
+  brcolor = DisplayController.createRawPixel(RGB222(0, 3, 0)); // bright green
+  fgcolor = DisplayController.createRawPixel(RGB222(0, 2, 0)); // green
+  bgcolor = DisplayController.createRawPixel(RGB222(0, 1, 0)); // dark green
+  darkbgcolor = DisplayController.createRawPixel(RGB222(0, 0, 0)); // black
+  width  = DisplayController.getScreenWidth();
+  height = DisplayController.getScreenHeight();
+  // Start keyboard
   PS2Controller.begin(PS2Preset::KeyboardPort0, KbdMode::GenerateVirtualKeys);
 
   // Set CPU bus functions and start it
   m_i8080.setCallbacks(auxPoint, readByte, writeByte, readWord, writeWord, readIO, writeIO); 
   m_i8080.reset();
   m_i8080.setPC(0x8000);  // PMD85 starts at this address due blocking A15
-  for (int i = 0; i < 16; ++i) keyboardIn[i]=0xFF;
+  for (int i = 0; i < 16; i++) keyboardIn[i]=0xFF;
 
   // Set function pro Keyboard processing
   PS2Controller.keyboard()->onVirtualKey = [&](VirtualKey * vk, bool keyDown) {
@@ -534,18 +546,15 @@ void setup()
   };
 }
 
-int BlinkCnt=0;   // Counter for video pixel blink
-
+// **************************************************************************************************
+// **************************************************************************************************
 void loop()
 {
   static int numCycles;
   numCycles = 0;
   while(numCycles < 30000) numCycles += m_i8080.step(); // approx. 30000 cycles per 16.6 milisec (60 Hz VGA)
   BlinkCnt++;
-  if(BlinkCnt >= 30) {
-    BlinkCnt=0;
-    if(blinkFlag) blinkFlag = false; else blinkFlag = true;
-  }
+  if(BlinkCnt >= 30) { BlinkCnt=0; blinkFlag = !blinkFlag; }     // Blink flag manipulation
 
   // wait for vertical sync
   ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
